@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"hash/maphash"
+	"maps"
 	"math"
 	"math/big"
 	"math/bits"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/text/collate"
+
+	ct "context"
 
 	js_ast "github.com/dop251/goja/ast"
 	"github.com/dop251/goja/file"
@@ -201,6 +204,7 @@ type Runtime struct {
 
 	promiseRejectionTracker PromiseRejectionTracker
 	asyncContextTracker     AsyncContextTracker
+	contextValues           map[string]interface{} // Map of context keys to their values
 }
 
 type StackFrame struct {
@@ -1987,9 +1991,17 @@ func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value 
 		nargs := typ.NumIn()
 		var in []reflect.Value
 
-		if l := len(call.Arguments); l < nargs {
-			// fill missing arguments with zero values
-			n := nargs
+		// Check if first argument is context.Context
+		hasContext := nargs > 0 && typ.In(0) == reflect.TypeOf((*ct.Context)(nil)).Elem()
+
+		// Adjust number of arguments if we have context
+		actualNargs := nargs
+		if hasContext {
+			actualNargs--
+		}
+
+		if l := len(call.Arguments); l < actualNargs {
+			n := actualNargs
 			if typ.IsVariadic() {
 				n--
 			}
@@ -1998,26 +2010,47 @@ func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value 
 				in[i] = reflect.Zero(typ.In(i))
 			}
 		} else {
-			if l > nargs && !typ.IsVariadic() {
-				l = nargs
+			if l > actualNargs && !typ.IsVariadic() {
+				l = actualNargs
 			}
 			in = make([]reflect.Value, l)
 		}
 
+		// If we have context, inject context with registered context values
+		if hasContext {
+			// Create a new slice with space for context
+			newIn := make([]reflect.Value, len(in)+1)
+
+			// Start with a base context
+			c := ct.TODO()
+
+			// Add all registered context values to the context
+			for key, value := range r.contextValues {
+				c = ct.WithValue(c, key, value)
+			}
+
+			newIn[0] = reflect.ValueOf(c)
+			copy(newIn[1:], in)
+			in = newIn
+		}
+
+		// Convert remaining arguments
 		for i, a := range call.Arguments {
 			var t reflect.Type
+			argIdx := i
+			if hasContext {
+				argIdx++
+			}
 
-			n := i
-			if n >= nargs-1 && typ.IsVariadic() {
-				if n > nargs-1 {
-					n = nargs - 1
+			if argIdx >= nargs-1 && typ.IsVariadic() {
+				if argIdx > nargs-1 {
+					argIdx = nargs - 1
 				}
-
-				t = typ.In(n).Elem()
-			} else if n > nargs-1 { // ignore extra arguments
+				t = typ.In(argIdx).Elem()
+			} else if argIdx > nargs-1 { // ignore extra arguments
 				break
 			} else {
-				t = typ.In(n)
+				t = typ.In(argIdx)
 			}
 
 			v := reflect.New(t).Elem()
@@ -2025,7 +2058,11 @@ func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value 
 			if err != nil {
 				panic(r.NewTypeError("could not convert function call parameter %d: %v", i, err))
 			}
-			in[i] = v
+			if hasContext {
+				in[i+1] = v
+			} else {
+				in[i] = v
+			}
 		}
 
 		out := value.Call(in)
@@ -3227,4 +3264,36 @@ func (r *Runtime) getPrototypeFromCtor(newTarget, defCtor, defProto *Object) *Ob
 		return obj
 	}
 	return defProto
+}
+
+// SetContextValue sets a value to be included in the context when calling Go functions.
+func (r *Runtime) SetContextValue(key string, value interface{}) {
+	if r.contextValues == nil {
+		r.contextValues = make(map[string]interface{})
+	}
+	r.contextValues[key] = value
+}
+
+// GetContextValue returns the value for a given context key.
+func (r *Runtime) GetContextValue(key string) (interface{}, bool) {
+	if r.contextValues == nil {
+		return nil, false
+	}
+	val, exists := r.contextValues[key]
+	return val, exists
+}
+
+// RemoveContextValue removes a value from the context values map.
+func (r *Runtime) RemoveContextValue(key string) {
+	if r.contextValues != nil {
+		delete(r.contextValues, key)
+	}
+}
+
+// GetContextValues returns a copy of all context values.
+func (r *Runtime) GetContextValues() map[string]interface{} {
+	if r.contextValues == nil {
+		return nil
+	}
+	return maps.Clone(r.contextValues)
 }
