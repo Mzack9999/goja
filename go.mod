@@ -12,6 +12,6 @@ require (
 )
 
 require (
-	github.com/Mzack9999/goja_nodejs v0.0.0-20250507183656-f403456d826c // indirect
+	github.com/Mzack9999/goja_nodejs v0.0.0-20250507184139-66bcbf65c883 // indirect
 	github.com/kr/pretty v0.3.0 // indirect
 )
