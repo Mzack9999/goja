@@ -205,6 +205,10 @@ type Runtime struct {
 	promiseRejectionTracker PromiseRejectionTracker
 	asyncContextTracker     AsyncContextTracker
 	contextValues           map[string]interface{} // Map of context keys to their values
+
+	// Stack for tracking objects currently being converted to string
+	// to detect and handle circular references
+	toStringStack []*Object
 }
 
 type StackFrame struct {
